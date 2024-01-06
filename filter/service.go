@@ -17,17 +17,17 @@ type Service interface {
 }
 
 type service struct {
-	rulesRepository  rules.Repository
-	client *miniflux.Client
-	l      log.Logger
+	rulesRepository rules.Repository
+	client          *miniflux.Client
+	l               log.Logger
 }
 
 // NewService initializes a new filter service
 func NewService(l log.Logger, c *miniflux.Client, rr rules.Repository) Service {
 	return &service{
-		rulesRepository:  rr,
-		client: c,
-		l:      l,
+		rulesRepository: rr,
+		client:          c,
+		l:               l,
 	}
 }
 
@@ -38,29 +38,15 @@ func (s *service) Run() {
 var filterEntryRegex = regexp.MustCompile(`(\w+?) (\S+?) (.+)`)
 
 func (s *service) RunFilterJob(simulation bool) {
-	// Fetch all feeds.
+	level.Info(s.l).Log("filter", "start")
 	f, err := s.client.Feeds()
 	if err != nil {
 		level.Error(s.l).Log("err", err)
 		return
 	}
+	totalMatched := 0
 	for _, feed := range f {
-		// Check if the feed matches one of our rules
-		var found bool
-		for _, rule := range s.rulesRepository.Rules() {
-			// Also support the wildcard selector
-			if rule.URL == "*" {
-				found = true
-			}
-			if strings.Contains(feed.FeedURL, rule.URL) {
-				found = true
-			}
-		}
-		if !found {
-			continue
-		}
-
-		// We then get all the unread entries of the feed that matches our rule
+		feedLogged := false
 		entries, err := s.client.FeedEntries(feed.ID, &miniflux.Filter{
 			Status: miniflux.EntryStatusUnread,
 		})
@@ -68,83 +54,87 @@ func (s *service) RunFilterJob(simulation bool) {
 			level.Error(s.l).Log("err", err)
 			continue
 		}
-
-		// We then check if the entry title matches a rule, if it matches we set it to "read" so we don't see it any more
-		var matchedEntries []int64
 		for _, entry := range entries.Entries {
-			if s.evaluateRules(entry) {
-				level.Info(s.l).Log("msg", "entry matches rules in the killfile", "entry_id", entry.ID, "feed_id", feed.ID)
-				matchedEntries = append(matchedEntries, entry.ID)
-			}
-		}
-		if simulation {
-			for _, me := range matchedEntries {
-				e, err := s.client.Entry(me)
-				if err != nil {
-					level.Error(s.l).Log("err", err)
-					return
+			for _, rule := range s.rulesRepository.Rules() {
+				skip := true
+				if rule.URL == "*" {
+					skip = false
+				} else {
+					matched, err := regexp.MatchString(rule.URL, feed.FeedURL)
+					if err != nil {
+						level.Error(s.l).Log("err", err)
+					} else if matched {
+						skip = false
+					}
 				}
-				level.Info(s.l).Log("msg", "would set status to read", "entry_id", me, "entry_title", e.Title)
-			}
-		} else {
-			for _, me := range matchedEntries {
-				level.Info(s.l).Log("msg", "set status to read", "entry_id", me)
-				if err := s.client.UpdateEntries([]int64{me}, miniflux.EntryStatusRead); err != nil {
-					level.Error(s.l).Log("msg", "error on updating the feed entries", "ids", me, "err", err)
-					return
+				if skip {
+					continue
+				}
+				if s.evaluateRule(entry, rule) {
+					totalMatched += 1
+					if !feedLogged {
+						level.Info(s.l).Log("feed", feed.Title, "ID", feed.ID, "url", feed.FeedURL)
+						feedLogged = true
+					}
+					level.Info(s.l).Log("filtering", entry.Title, "matches_rule", rule.FilterExpression)
+					if !simulation {
+						if err := s.client.UpdateEntries([]int64{entry.ID}, miniflux.EntryStatusRead); err != nil {
+							level.Error(s.l).Log("msg", "error on updating the feed entries", "ids", entry.ID, "err", err)
+							return
+						}
+					}
 				}
 			}
-		}
-		if len(matchedEntries) > 0 {
-			level.Info(s.l).Log("msg", "marked all matched feed items as read", "affected", len(matchedEntries))
 		}
 	}
+	level.Info(s.l).Log("filter", "end", "filtered", totalMatched)
 }
 
-// evaluateRules checks a feed items against the available rules. It returns wheater this entry should be killed or not.
-func (s service) evaluateRules(entry *miniflux.Entry) bool {
+func (s service) evaluateRule(entry *miniflux.Entry, rule rules.Rule) bool {
 	var shouldKill bool
-	for _, rule := range s.rulesRepository.Rules() {
-		tokens := filterEntryRegex.FindStringSubmatch(rule.FilterExpression)
-		if tokens == nil || len(tokens) != 4 {
-			level.Error(s.l).Log("err", "invalid filter expression", "expression", rule.FilterExpression)
-			continue
-		}
-		// We set the string we want to compare against (https://newsboat.org/releases/2.15/docs/newsboat.html#_filter_language are supported in the killfile format)
-		var entryTarget string
-		switch tokens[1] {
-		case "title":
-			entryTarget = entry.Title
-		case "description":
-			entryTarget = entry.Content
-		}
-
-		// We check what kind of comparator was given
+	tokens := filterEntryRegex.FindStringSubmatch(rule.FilterExpression)
+	if tokens == nil || len(tokens) != 4 {
+		level.Error(s.l).Log("err", "invalid filter expression", "expression", rule.FilterExpression)
+		return false
+	}
+	// We set the string we want to compare against (https://newsboat.org/releases/2.15/docs/newsboat.html#_filter_language are supported in the killfile format)
+	var entryTarget string
+	switch tokens[1] {
+	case "title":
+		entryTarget = entry.Title
+	case "description":
+		entryTarget = entry.Content
+	case "tags":
 		switch tokens[2] {
-		case "=~", "!~":
-			invertFilter := tokens[2][0] == '!'
-
-			matched, err := regexp.MatchString(tokens[3], entryTarget)
-			if err != nil {
-				level.Error(s.l).Log("err", err)
-			}
-
-			if matched && !invertFilter || !matched && invertFilter {
-				shouldKill = true
-			}
 		case "#", "!#":
 			invertFilter := tokens[2][0] == '!'
-
-			var containsTerm bool
-			blacklistTokens := strings.Split(tokens[3], ",")
-			for _, t := range blacklistTokens {
-				if strings.Contains(entryTarget, t) {
-					containsTerm = true
-					break
+			for _, tag := range entry.Tags {
+				matched, err := regexp.MatchString(tokens[3], tag)
+				if err != nil {
+					level.Error(s.l).Log("err", err)
+				}
+				if matched && !invertFilter || !matched && invertFilter {
+					return true
 				}
 			}
-			if containsTerm && !invertFilter || !containsTerm && invertFilter {
-				shouldKill = true
+		default:
+			level.Error(s.l).Log("err", "invalid filter expression: 'tags' only support # and #!", "expression", rule.FilterExpression)
+		}
+	}
+
+	// We check what kind of comparator was given
+	switch tokens[2] {
+	case "=~", "!~":
+		invertFilter := tokens[2][0] == '!'
+
+		matched, err := regexp.MatchString(tokens[3], entryTarget)
+		if err != nil {
+			level.Error(s.l).Log("err", err)
+		}
+
+		if matched && !invertFilter || !matched && invertFilter {
+			shouldKill = true
+		}
 			}
 		}
 	}
