@@ -47,6 +47,9 @@ func main() {
 	if *environment == "" {
 		panic("environment can't be empty")
 	}
+	if *environment != "development" && *environment != "prod" {
+		panic("environment must either be 'development' or 'prod'")
+	}
 
 	l := log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
 	switch strings.ToLower(*logLevel) {
