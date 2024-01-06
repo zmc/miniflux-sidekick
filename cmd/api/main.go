@@ -33,6 +33,7 @@ func main() {
 		killfileURL          = fs.String("killfile-url", "", "the url to the remote killfile eg. Github gist")
 		killfileRefreshHours = fs.Int("killfile-refresh-hours", 1, "how often the rules should be updated from local or remote config (in hours)")
 		refreshInterval      = fs.String("refresh-interval", "", "interval defining how often we check for new entries in miniflux")
+		now                  = fs.String("now", "", "check entries and exit")
 		port                 = fs.String("port", "8080", "the port the miniflux sidekick is running on")
 		logLevel             = fs.String("log-level", "", "the level to filter logs at eg. debug, info, warn, error")
 	)
@@ -160,8 +161,15 @@ func main() {
 	case "development":
 		level.Info(l).Log("msg", "running filter job in simulation mode", "env", *environment, "interval_cron", *refreshInterval)
 		filterService.RunFilterJob(true)
+		if *now == "y" {
+			return
+		}
 	case "prod":
 		level.Info(l).Log("msg", "running filter job in destructive mode", "env", *environment, "interval_cron", *refreshInterval)
+		if *now == "y" {
+			filterService.RunFilterJob(false)
+			return
+		}
 		_, err := cron.AddJob(*refreshInterval, filterService)
 		if err != nil {
 			level.Error(l).Log("msg", "error adding cron job to scheduler", "err", err)
