@@ -1,15 +1,21 @@
 # github.com/go-chi/chi v4.0.2+incompatible
+## explicit
 github.com/go-chi/chi
-# github.com/go-kit/kit v0.9.0
+# github.com/go-kit/kit v0.10.0
+## explicit; go 1.13
 github.com/go-kit/kit/log
 github.com/go-kit/kit/log/level
-# github.com/go-logfmt/logfmt v0.4.0
+# github.com/go-logfmt/logfmt v0.5.1
+## explicit; go 1.17
 github.com/go-logfmt/logfmt
-# github.com/kr/logfmt v0.0.0-20140226030751-b84e30acd515
-github.com/kr/logfmt
 # github.com/peterbourgon/ff v1.6.0
+## explicit
 github.com/peterbourgon/ff
 # github.com/robfig/cron/v3 v3.0.0
+## explicit; go 1.12
 github.com/robfig/cron/v3
-# miniflux.app v0.0.0-20200718020908-1b5f217e9c4e
+# golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2
+## explicit; go 1.17
+# miniflux.app v1.0.46
+## explicit; go 1.19
 miniflux.app/client

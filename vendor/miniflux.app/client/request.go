@@ -1,6 +1,5 @@
-// Copyright 2018 Frédéric Guillot. All rights reserved.
-// Use of this source code is governed by the Apache 2.0
-// license that can be found in the LICENSE file.
+// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 package client // import "miniflux.app/client"
 
@@ -10,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -57,8 +55,9 @@ func (r *request) Put(path string, data interface{}) (io.ReadCloser, error) {
 	return r.execute(http.MethodPut, path, data)
 }
 
-func (r *request) Delete(path string) (io.ReadCloser, error) {
-	return r.execute(http.MethodDelete, path, nil)
+func (r *request) Delete(path string) error {
+	_, err := r.execute(http.MethodDelete, path, nil)
+	return err
 }
 
 func (r *request) execute(method, path string, data interface{}) (io.ReadCloser, error) {
@@ -82,11 +81,11 @@ func (r *request) execute(method, path string, data interface{}) (io.ReadCloser,
 	}
 
 	if data != nil {
-		switch data.(type) {
+		switch data := data.(type) {
 		case io.ReadCloser:
-			request.Body = data.(io.ReadCloser)
+			request.Body = data
 		default:
-			request.Body = ioutil.NopCloser(bytes.NewBuffer(r.toJSON(data)))
+			request.Body = io.NopCloser(bytes.NewBuffer(r.toJSON(data)))
 		}
 	}
 
@@ -98,13 +97,27 @@ func (r *request) execute(method, path string, data interface{}) (io.ReadCloser,
 
 	switch response.StatusCode {
 	case http.StatusUnauthorized:
+		response.Body.Close()
 		return nil, ErrNotAuthorized
 	case http.StatusForbidden:
+		response.Body.Close()
 		return nil, ErrForbidden
 	case http.StatusInternalServerError:
-		return nil, ErrServerError
+		defer response.Body.Close()
+
+		var resp errorResponse
+		decoder := json.NewDecoder(response.Body)
+		// If we failed to decode, just return a generic ErrServerError
+		if err := decoder.Decode(&resp); err != nil {
+			return nil, ErrServerError
+		}
+		return nil, errors.New("miniflux: internal server error: " + resp.ErrorMessage)
 	case http.StatusNotFound:
+		response.Body.Close()
 		return nil, ErrNotFound
+	case http.StatusNoContent:
+		response.Body.Close()
+		return nil, nil
 	case http.StatusBadRequest:
 		defer response.Body.Close()
 
@@ -118,6 +131,7 @@ func (r *request) execute(method, path string, data interface{}) (io.ReadCloser,
 	}
 
 	if response.StatusCode > 400 {
+		response.Body.Close()
 		return nil, fmt.Errorf("miniflux: status code=%d", response.StatusCode)
 	}
 

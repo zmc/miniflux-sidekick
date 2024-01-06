@@ -1,6 +1,5 @@
-// Copyright 2018 Frédéric Guillot. All rights reserved.
-// Use of this source code is governed by the Apache 2.0
-// license that can be found in the LICENSE file.
+// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 package client // import "miniflux.app/client"
 
@@ -8,9 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // Client holds API procedure calls.
@@ -20,6 +19,11 @@ type Client struct {
 
 // New returns a new Miniflux client.
 func New(endpoint string, credentials ...string) *Client {
+	// Web gives "API Endpoint = https://miniflux.app/v1/", it doesn't work (/v1/v1/me)
+	endpoint = strings.TrimSuffix(endpoint, "/")
+	endpoint = strings.TrimSuffix(endpoint, "/v1")
+	// trim to https://miniflux.app
+
 	if len(credentials) == 2 {
 		return &Client{request: &request{endpoint: endpoint, username: credentials[0], password: credentials[1]}}
 	}
@@ -96,7 +100,11 @@ func (c *Client) UserByUsername(username string) (*User, error) {
 
 // CreateUser creates a new user in the system.
 func (c *Client) CreateUser(username, password string, isAdmin bool) (*User, error) {
-	body, err := c.request.Post("/v1/users", &User{Username: username, Password: password, IsAdmin: isAdmin})
+	body, err := c.request.Post("/v1/users", &UserCreationRequest{
+		Username: username,
+		Password: password,
+		IsAdmin:  isAdmin,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +120,7 @@ func (c *Client) CreateUser(username, password string, isAdmin bool) (*User, err
 }
 
 // UpdateUser updates a user in the system.
-func (c *Client) UpdateUser(userID int64, userChanges *UserModification) (*User, error) {
+func (c *Client) UpdateUser(userID int64, userChanges *UserModificationRequest) (*User, error) {
 	body, err := c.request.Put(fmt.Sprintf("/v1/users/%d", userID), userChanges)
 	if err != nil {
 		return nil, err
@@ -130,12 +138,13 @@ func (c *Client) UpdateUser(userID int64, userChanges *UserModification) (*User,
 
 // DeleteUser removes a user from the system.
 func (c *Client) DeleteUser(userID int64) error {
-	body, err := c.request.Delete(fmt.Sprintf("/v1/users/%d", userID))
-	if err != nil {
-		return err
-	}
-	body.Close()
-	return nil
+	return c.request.Delete(fmt.Sprintf("/v1/users/%d", userID))
+}
+
+// MarkAllAsRead marks all unread entries as read for a given user.
+func (c *Client) MarkAllAsRead(userID int64) error {
+	_, err := c.request.Put(fmt.Sprintf("/v1/users/%d/mark-all-as-read", userID), nil)
+	return err
 }
 
 // Discover try to find subscriptions from a website.
@@ -177,7 +186,6 @@ func (c *Client) CreateCategory(title string) (*Category, error) {
 	body, err := c.request.Post("/v1/categories", map[string]interface{}{
 		"title": title,
 	})
-
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +205,6 @@ func (c *Client) UpdateCategory(categoryID int64, title string) (*Category, erro
 	body, err := c.request.Put(fmt.Sprintf("/v1/categories/%d", categoryID), map[string]interface{}{
 		"title": title,
 	})
-
 	if err != nil {
 		return nil, err
 	}
@@ -212,15 +219,38 @@ func (c *Client) UpdateCategory(categoryID int64, title string) (*Category, erro
 	return category, nil
 }
 
-// DeleteCategory removes a category.
-func (c *Client) DeleteCategory(categoryID int64) error {
-	body, err := c.request.Delete(fmt.Sprintf("/v1/categories/%d", categoryID))
+// MarkCategoryAsRead marks all unread entries in a category as read.
+func (c *Client) MarkCategoryAsRead(categoryID int64) error {
+	_, err := c.request.Put(fmt.Sprintf("/v1/categories/%d/mark-all-as-read", categoryID), nil)
+	return err
+}
+
+// CategoryFeeds gets feeds of a category.
+func (c *Client) CategoryFeeds(categoryID int64) (Feeds, error) {
+	body, err := c.request.Get(fmt.Sprintf("/v1/categories/%d/feeds", categoryID))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer body.Close()
 
-	return nil
+	var feeds Feeds
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&feeds); err != nil {
+		return nil, fmt.Errorf("miniflux: response error (%v)", err)
+	}
+
+	return feeds, nil
+}
+
+// DeleteCategory removes a category.
+func (c *Client) DeleteCategory(categoryID int64) error {
+	return c.request.Delete(fmt.Sprintf("/v1/categories/%d", categoryID))
+}
+
+// RefreshCategory refreshes a category.
+func (c *Client) RefreshCategory(categoryID int64) error {
+	_, err := c.request.Put(fmt.Sprintf("/v1/categories/%d/refresh", categoryID), nil)
+	return err
 }
 
 // Feeds gets all feeds.
@@ -248,7 +278,7 @@ func (c *Client) Export() ([]byte, error) {
 	}
 	defer body.Close()
 
-	opml, err := ioutil.ReadAll(body)
+	opml, err := io.ReadAll(body)
 	if err != nil {
 		return nil, err
 	}
@@ -280,11 +310,8 @@ func (c *Client) Feed(feedID int64) (*Feed, error) {
 }
 
 // CreateFeed creates a new feed.
-func (c *Client) CreateFeed(url string, categoryID int64) (int64, error) {
-	body, err := c.request.Post("/v1/feeds", map[string]interface{}{
-		"feed_url":    url,
-		"category_id": categoryID,
-	})
+func (c *Client) CreateFeed(feedCreationRequest *FeedCreationRequest) (int64, error) {
+	body, err := c.request.Post("/v1/feeds", feedCreationRequest)
 	if err != nil {
 		return 0, err
 	}
@@ -304,7 +331,7 @@ func (c *Client) CreateFeed(url string, categoryID int64) (int64, error) {
 }
 
 // UpdateFeed updates a feed.
-func (c *Client) UpdateFeed(feedID int64, feedChanges *FeedModification) (*Feed, error) {
+func (c *Client) UpdateFeed(feedID int64, feedChanges *FeedModificationRequest) (*Feed, error) {
 	body, err := c.request.Put(fmt.Sprintf("/v1/feeds/%d", feedID), feedChanges)
 	if err != nil {
 		return nil, err
@@ -312,42 +339,34 @@ func (c *Client) UpdateFeed(feedID int64, feedChanges *FeedModification) (*Feed,
 	defer body.Close()
 
 	var f *Feed
-	decoder := json.NewDecoder(body)
-	if err := decoder.Decode(&f); err != nil {
+	if err := json.NewDecoder(body).Decode(&f); err != nil {
 		return nil, fmt.Errorf("miniflux: response error (%v)", err)
 	}
 
 	return f, nil
 }
 
+// MarkFeedAsRead marks all unread entries of the feed as read.
+func (c *Client) MarkFeedAsRead(feedID int64) error {
+	_, err := c.request.Put(fmt.Sprintf("/v1/feeds/%d/mark-all-as-read", feedID), nil)
+	return err
+}
+
 // RefreshAllFeeds refreshes all feeds.
 func (c *Client) RefreshAllFeeds() error {
-	body, err := c.request.Put(fmt.Sprintf("/v1/feeds/refresh"), nil)
-	if err != nil {
-		return err
-	}
-	body.Close()
-	return nil
+	_, err := c.request.Put("/v1/feeds/refresh", nil)
+	return err
 }
 
 // RefreshFeed refreshes a feed.
 func (c *Client) RefreshFeed(feedID int64) error {
-	body, err := c.request.Put(fmt.Sprintf("/v1/feeds/%d/refresh", feedID), nil)
-	if err != nil {
-		return err
-	}
-	body.Close()
-	return nil
+	_, err := c.request.Put(fmt.Sprintf("/v1/feeds/%d/refresh", feedID), nil)
+	return err
 }
 
 // DeleteFeed removes a feed.
 func (c *Client) DeleteFeed(feedID int64) error {
-	body, err := c.request.Delete(fmt.Sprintf("/v1/feeds/%d", feedID))
-	if err != nil {
-		return err
-	}
-	body.Close()
-	return nil
+	return c.request.Delete(fmt.Sprintf("/v1/feeds/%d", feedID))
 }
 
 // FeedIcon gets a feed icon.
@@ -370,6 +389,23 @@ func (c *Client) FeedIcon(feedID int64) (*FeedIcon, error) {
 // FeedEntry gets a single feed entry.
 func (c *Client) FeedEntry(feedID, entryID int64) (*Entry, error) {
 	body, err := c.request.Get(fmt.Sprintf("/v1/feeds/%d/entries/%d", feedID, entryID))
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	var entry *Entry
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&entry); err != nil {
+		return nil, fmt.Errorf("miniflux: response error (%v)", err)
+	}
+
+	return entry, nil
+}
+
+// CategoryEntry gets a single category entry.
+func (c *Client) CategoryEntry(categoryID, entryID int64) (*Entry, error) {
+	body, err := c.request.Get(fmt.Sprintf("/v1/categories/%d/entries/%d", categoryID, entryID))
 	if err != nil {
 		return nil, err
 	}
@@ -439,6 +475,25 @@ func (c *Client) FeedEntries(feedID int64, filter *Filter) (*EntryResultSet, err
 	return &result, nil
 }
 
+// CategoryEntries fetch entries of a category.
+func (c *Client) CategoryEntries(categoryID int64, filter *Filter) (*EntryResultSet, error) {
+	path := buildFilterQueryString(fmt.Sprintf("/v1/categories/%d/entries", categoryID), filter)
+
+	body, err := c.request.Get(path)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	var result EntryResultSet
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&result); err != nil {
+		return nil, fmt.Errorf("miniflux: response error (%v)", err)
+	}
+
+	return &result, nil
+}
+
 // UpdateEntries updates the status of a list of entries.
 func (c *Client) UpdateEntries(entryIDs []int64, status string) error {
 	type payload struct {
@@ -446,24 +501,31 @@ func (c *Client) UpdateEntries(entryIDs []int64, status string) error {
 		Status   string  `json:"status"`
 	}
 
-	body, err := c.request.Put("/v1/entries", &payload{EntryIDs: entryIDs, Status: status})
-	if err != nil {
-		return err
-	}
-	body.Close()
-
-	return nil
+	_, err := c.request.Put("/v1/entries", &payload{EntryIDs: entryIDs, Status: status})
+	return err
 }
 
 // ToggleBookmark toggles entry bookmark value.
 func (c *Client) ToggleBookmark(entryID int64) error {
-	body, err := c.request.Put(fmt.Sprintf("/v1/entries/%d/bookmark", entryID), nil)
-	if err != nil {
-		return err
-	}
-	body.Close()
+	_, err := c.request.Put(fmt.Sprintf("/v1/entries/%d/bookmark", entryID), nil)
+	return err
+}
 
-	return nil
+// FetchCounters
+func (c *Client) FetchCounters() (*FeedCounters, error) {
+	body, err := c.request.Get("/v1/feeds/counters")
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	var result FeedCounters
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&result); err != nil {
+		return nil, fmt.Errorf("miniflux: response error (%v)", err)
+	}
+
+	return &result, nil
 }
 
 func buildFilterQueryString(path string, filter *Filter) string {
@@ -506,12 +568,24 @@ func buildFilterQueryString(path string, filter *Filter) string {
 			values.Set("before_entry_id", strconv.FormatInt(filter.BeforeEntryID, 10))
 		}
 
-		if filter.Starred {
-			values.Set("starred", "1")
+		if filter.Starred != "" {
+			values.Set("starred", filter.Starred)
 		}
 
 		if filter.Search != "" {
 			values.Set("search", filter.Search)
+		}
+
+		if filter.CategoryID > 0 {
+			values.Set("category_id", strconv.FormatInt(filter.CategoryID, 10))
+		}
+
+		if filter.FeedID > 0 {
+			values.Set("feed_id", strconv.FormatInt(filter.FeedID, 10))
+		}
+
+		for _, status := range filter.Statuses {
+			values.Add("status", status)
 		}
 
 		path = fmt.Sprintf("%s?%s", path, values.Encode())
