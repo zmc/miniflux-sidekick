@@ -135,7 +135,19 @@ func (s service) evaluateRule(entry *miniflux.Entry, rule rules.Rule) bool {
 		if matched && !invertFilter || !matched && invertFilter {
 			shouldKill = true
 		}
+	case "#", "!#":
+		invertFilter := tokens[2][0] == '!'
+
+		var containsTerm bool
+		blacklistTokens := strings.Split(tokens[3], ",")
+		for _, t := range blacklistTokens {
+			if strings.Contains(entryTarget, t) {
+				containsTerm = true
+				break
 			}
+		}
+		if containsTerm && !invertFilter || !containsTerm && invertFilter {
+			shouldKill = true
 		}
 	}
 	return shouldKill
